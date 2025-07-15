@@ -10,51 +10,10 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import axios from 'axios';
-import { z } from 'zod';
-import { setTimeout, clearTimeout } from 'node:timers';
-import process from 'node:process';
-
-// Type definitions
-interface AxiosConfig {
-  method: string;
-  url: string;
-  headers: Record<string, string>;
-  timeout: number;
-  data?: Record<string, unknown>;
-  params?: Record<string, unknown>;
-}
-
-interface ApiError extends Error {
-  response?: {
-    data?: {
-      message?: string;
-    };
-  };
-}
-
-interface AuthConfig {
-  clientId: string;
-  clientSecret: string;
-  baseUrl: string;
-  authEndpoint: string;
-}
-
-interface TokenCache {
-  token: string | null;
-  expiry: Date | null;
-  lastRefresh: Date | null;
-  refreshCount: number;
-  failureCount: number;
-}
-
-interface ToolParams {
-  [key: string]: any;
-}
-
-interface ToolContext {
-  [key: string]: any;
-}
+import process from 'process';
+import { createTokenManager } from './utils/index.js';
+import { AuthConfig } from './types/index.js';
+import { registerTools } from './tools/index.js';
 
 // Server configuration
 const server = new McpServer({
@@ -77,495 +36,68 @@ const baseUrl = process.env.API_BASE_URL || '{{baseUrl}}';
 {{/each}}
 {{/if}}
 
-// Phase 1: Functional Authentication System
 // Environment configuration validation
 const getAuthConfig = (): AuthConfig => {
-  const clientId = process.env.{{constantCase serverName}}_CLIENT_ID;
-  const clientSecret = process.env.{{constantCase serverName}}_CLIENT_SECRET;
+  const clientId = process.env.CLIENT_ID;
+  const clientSecret = process.env.CLIENT_SECRET;
   
   if (!clientId || !clientSecret) {
-    throw new Error(`Missing required environment variables: {{constantCase serverName}}_CLIENT_ID, {{constantCase serverName}}_CLIENT_SECRET`);
+    throw new Error(`Missing required environment variables: CLIENT_ID, CLIENT_SECRET`);
   }
   
   const config: AuthConfig = {
     clientId,
     clientSecret,
     baseUrl: process.env.API_BASE_URL || '{{baseUrl}}',
-    authEndpoint: process.env.{{constantCase serverName}}_AUTH_ENDPOINT || '/v2/auth/login'
+    authEndpoint: process.env.AUTH_ENDPOINT || '/v2/auth/login'
   };
   
   return config;
 };
 
-// Phase 2: Enhanced functional token cache with buffer and metrics
-const createTokenCache = () => {
-  let cachedToken: string | null = null;
-  let tokenExpiry: Date | null = null;
-  let refreshBuffer = 300; // 5 minutes buffer before expiry
-  let lastRefreshTime: Date | null = null;
-  let refreshCount = 0;
-  let failureCount = 0;
-  
-  return {
-    get: () => ({
-      token: cachedToken,
-      expiry: tokenExpiry,
-      lastRefresh: lastRefreshTime,
-      refreshCount,
-      failureCount
-    }),
-    set: (token: string, expiresIn: number) => {
-      cachedToken = token;
-      tokenExpiry = new Date(Date.now() + (expiresIn * 1000));
-      lastRefreshTime = new Date();
-      refreshCount++;
-      failureCount = 0; // Reset failure count on successful refresh
-    },
-    clear: () => {
-      cachedToken = null;
-      tokenExpiry = null;
-      lastRefreshTime = null;
-      failureCount++;
-    },
-    isExpired: () => {
-      if (!tokenExpiry) return true;
-      return new Date() >= tokenExpiry;
-    },
-    needsRefresh: () => {
-      if (!tokenExpiry) return true;
-      // Refresh token if within buffer time of expiry
-      const bufferTime = new Date(tokenExpiry.getTime() - (refreshBuffer * 1000));
-      return new Date() >= bufferTime;
-    },
-    getTimeToExpiry: () => {
-      if (!tokenExpiry) return 0;
-      return Math.max(0, tokenExpiry.getTime() - Date.now());
-    },
-    setRefreshBuffer: (seconds: number) => {
-      refreshBuffer = seconds;
-    }
-  };
-};
+// Initialize authentication system lazily
+let tokenManager: ReturnType<typeof createTokenManager> | null = null;
 
-// Phase 2: Enhanced authentication with retry and backoff
-const authenticate = async (config: AuthConfig, attempt = 1): Promise<any> => {
-  const maxRetries = 3;
-  const baseDelay = 1000; // 1 second base delay
-  
-  try {
-    const response = await axios.post(`${config.baseUrl}${config.authEndpoint}`, {
-      username: config.clientId,
-      password: config.clientSecret
-    }, {
-      headers: { 'Content-Type': 'application/json' },
-      timeout: 30000
-    });
-    return response.data;
-  } catch (error) {
-    if (attempt < maxRetries && (error as any).response?.status >= 500) {
-      // Exponential backoff for server errors
-      const delay = baseDelay * Math.pow(2, attempt - 1);
-      await new Promise(resolve => setTimeout(resolve, delay));
-      return authenticate(config, attempt + 1);
-    }
-    throw error;
-  }
-};
-
-// Phase 2: Advanced token manager with proactive refresh and concurrency control
-const createTokenManager = (config: AuthConfig) => {
-  const cache = createTokenCache();
-  let refreshPromise: Promise<string> | null = null; // Prevent concurrent refresh attempts
-  let proactiveRefreshTimer: ReturnType<typeof setTimeout> | null = null;
-  
-  const scheduleProactiveRefresh = (timeToRefresh: number) => {
-    if (proactiveRefreshTimer) {
-      clearTimeout(proactiveRefreshTimer);
-    }
-    
-    // Schedule refresh 5 minutes before expiry
-    const refreshTime = Math.max(1000, timeToRefresh - 300000);
-    proactiveRefreshTimer = setTimeout(async () => {
-      try {
-        await refreshToken();
-      } catch (error) {
-      }
-    }, refreshTime);
-  };
-  
-  const refreshToken = async () => {
-    if (refreshPromise) {
-      // Wait for existing refresh to complete
-      return refreshPromise;
-    }
-    
-    refreshPromise = (async () => {
-      try {
-        const authData = await authenticate(config);
-        cache.set(authData.access_token, authData.expires_in || 3600);
-        
-        // Schedule next proactive refresh
-        const timeToExpiry = cache.getTimeToExpiry();
-        scheduleProactiveRefresh(timeToExpiry);
-        
-        return authData.access_token;
-      } catch (error) {
-        cache.clear();
-        throw new Error(`Authentication failed: ${(error as Error).message}`);
-      } finally {
-        refreshPromise = null;
-      }
-    })();
-    
-    return refreshPromise;
-  };
-  
-  const getValidToken = async () => {
-    const { token, failureCount } = cache.get();
-    
-    // Implement exponential backoff for repeated failures
-    if (failureCount > 0) {
-      const backoffDelay = Math.min(30000, 1000 * Math.pow(2, failureCount - 1));
-      await new Promise(resolve => setTimeout(resolve, backoffDelay));
-    }
-    
-    if (!token || cache.needsRefresh()) {
-      return refreshToken();
-    }
-    
-    return token;
-  };
-  
-  // Initialize proactive refresh if token exists
-  const initializeProactiveRefresh = () => {
-    const { token } = cache.get();
-    if (token && !cache.isExpired()) {
-      const timeToExpiry = cache.getTimeToExpiry();
-      scheduleProactiveRefresh(timeToExpiry);
-    }
-  };
-  
-  // Cleanup function
-  const cleanup = () => {
-    if (proactiveRefreshTimer) {
-      clearTimeout(proactiveRefreshTimer);
-    }
-  };
-  
-  // Initialize
-  initializeProactiveRefresh();
-  
-  return {
-    getValidToken,
-    refreshToken,
-    cleanup,
-    getStats: () => cache.get()
-  };
-};
-
-// Phase 3: Dynamic header parameter extraction from OpenAPI spec
-const extractHeaderParams = (params: ToolParams): Record<string, string> => {
-  const headerParams: Record<string, string> = {};
-  
-  // Extract all parameter keys that could be headers
-  Object.keys(params).forEach(key => {
-    // Skip parameters that are clearly not headers
-    if (isHeaderParameter(key, params[key])) {
-      const headerName = convertToHeaderName(key);
-      headerParams[headerName] = String(params[key]);
-    }
-  });
-  
-  return headerParams;
-};
-
-// Phase 3: Intelligent header parameter detection
-const isHeaderParameter = (paramName: string, paramValue: any) => {
-  // Skip null/undefined values
-  if (paramValue === null || paramValue === undefined) {
-    return false;
-  }
-  
-  // Common header patterns (case-insensitive)
-  const headerPatterns = [
-    /^x[_-]/i,              // X-* headers (X-Payload-Signature, X-Request-ID)
-    /^accept[_-]/i,         // Accept-* headers
-    /^content[_-]/i,        // Content-* headers
-    /^authorization$/i,     // Authorization header
-    /^user[_-]agent$/i,     // User-Agent header
-    /^correlation[_-]id$/i, // Correlation-ID variants
-    /^request[_-]id$/i,     // Request-ID variants
-    /^trace[_-]id$/i,       // Trace-ID variants
-    /^api[_-]key$/i,        // API-Key variants
-    /^client[_-]id$/i,      // Client-ID variants
-    /signature$/i,          // *-Signature headers
-    /^bearer$/i,            // Bearer token
-    /^basic$/i,             // Basic auth
-    /^etag$/i,              // ETag header
-    /^if[_-]/i,             // If-* headers
-    /^cache[_-]/i,          // Cache-* headers
-    /^pragma$/i,            // Pragma header
-    /^referer$/i,           // Referer header
-    /^origin$/i,            // Origin header
-    /^host$/i,              // Host header
-    /^forwarded$/i,         // Forwarded headers
-    /^via$/i                // Via header
-  ];
-  
-  // Check if parameter name matches header patterns
-  return headerPatterns.some(pattern => pattern.test(paramName));
-};
-
-// Phase 3: Convert parameter name to proper HTTP header format
-const convertToHeaderName = (paramName: string) => {
-  // Handle common parameter naming conventions
-  let headerName = paramName
-    .replace(/_/g, '-')          // Convert underscores to hyphens
-    .replace(/([a-z])([A-Z])/g, '$1-$2') // Convert camelCase to kebab-case
-    .toLowerCase();              // Convert to lowercase first
-  
-  // Capitalize each word (HTTP header convention)
-  return headerName
-    .split('-')
-    .map((word: string) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-    .join('-');
-};
-
-// Phase 3: Enhanced header validation and sanitization
-const validateAndSanitizeHeader = (name: string, value: any) => {
-  // Validate header name (RFC 7230)
-  if (!/^[a-zA-Z0-9!#$&'*+\-.^_`|~]+$/.test(name)) {
-    return null;
-  }
-  
-  // Sanitize header value (remove control characters)
-  const sanitizedValue = String(value)
-    .replace(/[\x00-\x1F\x7F]/g, '') // Remove control characters
-    .trim();
-  
-  // Validate header value is not empty after sanitization
-  if (!sanitizedValue) {
-    return null;
-  }
-  
-  return { name, value: sanitizedValue };
-};
-
-// Phase 3: Enhanced header building with comprehensive parameter detection
-const buildAuthenticatedHeaders = async (params: ToolParams, tokenManager: any): Promise<Record<string, string>> => {
-  const maxRetries = 2;
-  let lastError: any = null;
-  
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+const getTokenManager = () => {
+  if (!tokenManager) {
     try {
-      const token = await tokenManager.getValidToken();
-      const baseHeaders = {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`
-      };
-      
-      // Phase 3: Extract and validate all header parameters dynamically
-      const rawHeaderParams = extractHeaderParams(params);
-      const validatedHeaders: Record<string, string> = {};
-      
-      // Validate and sanitize each header before adding
-      Object.entries(rawHeaderParams).forEach(([name, value]) => {
-        const validated = validateAndSanitizeHeader(name, value);
-        if (validated) {
-          validatedHeaders[validated.name] = validated.value;
-        }
-      });
-      
-      // Phase 3: Log header extraction for debugging (excluding sensitive data)
-      const headerCount = Object.keys(validatedHeaders).length;
-      if (headerCount > 0) {
-        const headerNames = Object.keys(validatedHeaders).filter(name =>
-          !name.toLowerCase().includes('authorization') &&
-          !name.toLowerCase().includes('token') &&
-          !name.toLowerCase().includes('key')
-        );
-      }
-      
-      return { ...baseHeaders, ...validatedHeaders };
+      const authConfig = getAuthConfig();
+      tokenManager = createTokenManager(authConfig);
     } catch (error) {
-      lastError = error;
-      if (attempt < maxRetries) {
-        // Short delay before retry
-        await new Promise(resolve => setTimeout(resolve, 1000));
-      }
+      console.error('Warning: Authentication not configured:', (error as Error).message);
+      // Return a mock token manager for testing/inspection
+      tokenManager = {
+        getValidToken: async () => { throw new Error('Authentication not configured'); },
+        refreshToken: async () => { throw new Error('Authentication not configured'); },
+        cleanup: () => {},
+        getStats: () => ({ token: null, expiry: null, lastRefresh: null, refreshCount: 0, failureCount: 0 })
+      };
     }
   }
-  
-  throw new Error(`Failed to build authenticated headers after ${maxRetries} attempts: ${(lastError as Error).message}`);
+  return tokenManager;
 };
-
-// Phase 2: Token monitoring and health check
-const createTokenMonitor = (tokenManager: any) => {
-  const startTime = new Date();
-  
-  const getHealthStatus = () => {
-    const stats = tokenManager.getStats();
-    const uptime = Date.now() - startTime.getTime();
-    
-    return {
-      status: stats.token ? 'healthy' : 'no_token',
-      uptime: Math.floor(uptime / 1000), // seconds
-      tokenExpiry: stats.expiry,
-      timeToExpiry: stats.expiry ? Math.floor((stats.expiry.getTime() - Date.now()) / 1000) : 0,
-      refreshCount: stats.refreshCount,
-      failureCount: stats.failureCount,
-      lastRefresh: stats.lastRefresh
-    };
-  };
-  
-  // Log health status periodically (every 30 minutes)
-  setInterval(() => {
-    const health = getHealthStatus();
-  }, 30 * 60 * 1000);
-  
-  return { getHealthStatus };
-};
-
-// Phase 2: Initialize enhanced authentication system with monitoring
-const authConfig = getAuthConfig();
-const tokenManager = createTokenManager(authConfig);
-const tokenMonitor = createTokenMonitor(tokenManager);
 
 // Graceful shutdown handling
 process.on('SIGTERM', () => {
   console.error('Received SIGTERM, cleaning up...');
-  tokenManager.cleanup();
+  if (tokenManager) {
+    tokenManager.cleanup();
+  }
   process.exit(0);
 });
 
 process.on('SIGINT', () => {
   console.error('Received SIGINT, cleaning up...');
-  tokenManager.cleanup();
+  if (tokenManager) {
+    tokenManager.cleanup();
+  }
   process.exit(0);
 });
 
-// Helper function to reconstruct nested objects from flattened parameters
-const setNestedProperty = (obj: Record<string, any>, path: string, value: any) => {
-  const keys = path.split('.');
-  let current = obj;
-  
-  for (let i = 0; i < keys.length - 1; i++) {
-    const key = keys[i];
-    if (!(key in current) || typeof current[key] !== 'object') {
-      current[key] = {};
-    }
-    current = current[key];
-  }
-  
-  current[keys[keys.length - 1]] = value;
-};
+// Register tools
+registerTools(server, getTokenManager, baseUrl);
 
-{{#each tools}}
-// Tool: {{name}}
-{{#if headerParams}}
-// Header parameters detected: {{#each headerParams}}{{name}}{{#unless @last}}, {{/unless}}{{/each}}
-{{/if}}
-server.tool(
-  '{{name}}',
-  '{{safeString description}}',
-  {
-    {{#each inputSchema.properties}}
-    {{toValidIdentifier @key}}: {{#if this.type}}{{#if (eq this.type "string")}}{{#if this.enum}}z.enum([{{#each this.enum}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}]){{else}}z.string(){{#if this.minLength}}.min({{this.minLength}}){{/if}}{{#if this.maxLength}}.max({{this.maxLength}}){{/if}}{{#if this.pattern}}.regex(/{{this.pattern}}/){{/if}}{{/if}}{{else if (eq this.type "number")}}z.number(){{#if this.minimum}}.min({{this.minimum}}){{/if}}{{#if this.maximum}}.max({{this.maximum}}){{/if}}{{#if this.format}}.int(){{/if}}{{else if (eq this.type "integer")}}z.number().int(){{#if this.minimum}}.min({{this.minimum}}){{/if}}{{#if this.maximum}}.max({{this.maximum}}){{/if}}{{else if (eq this.type "boolean")}}z.boolean(){{else if (eq this.type "object")}}z.object({}).passthrough(){{else if (eq this.type "array")}}z.array(z.any()){{else}}z.any(){{/if}}{{else}}z.any(){{/if}}{{#unless (includes ../inputSchema.required @key)}}.optional(){{/unless}}.describe('{{safeString this.description}}'),
-    {{/each}}
-  },
-  async (params: { {{#each inputSchema.properties}}{{toValidIdentifier @key}}{{#unless (includes ../inputSchema.required @key)}}?{{/unless}}: {{#if this.type}}{{#if (eq this.type "string")}}string{{else if (eq this.type "number")}}number{{else if (eq this.type "integer")}}number{{else if (eq this.type "boolean")}}boolean{{else if (eq this.type "object")}}any{{else if (eq this.type "array")}}any[]{{else}}any{{/if}}{{else}}any{{/if}}{{#unless @last}}; {{/unless}}{{/each}} }, context: ToolContext) => {
-    try {
-      const { {{#each inputSchema.properties}}{{toValidIdentifier @key}}{{#unless @last}}, {{/unless}}{{/each}} } = params;
-      const requestParams = { {{#each inputSchema.properties}}"{{getOriginalParamName @key}}": {{toValidIdentifier @key}}{{#unless @last}}, {{/unless}}{{/each}} };
-      const headers = await buildAuthenticatedHeaders(requestParams, tokenManager);
-      
-      // Build URL with path parameters
-      let url = `${baseUrl}{{path}}`;
-      
-      {{#if (hasPathParams inputSchema.properties)}}
-      // Replace path parameters
-      {{#each inputSchema.properties}}
-      {{#if this.isPathParam}}
-      if ({{toValidIdentifier @key}} !== undefined) {
-        url = url.replace('{{getParamWithBraces (getOriginalParamName @key)}}', encodeURIComponent(String({{toValidIdentifier @key}})));
-      }
-      {{/if}}
-      {{/each}}
-      {{/if}}
-      
-      // Build query parameters
-      const queryParams = new URLSearchParams();
-      {{#each inputSchema.properties}}
-      {{#if this.isQueryParam}}
-      if ({{toValidIdentifier @key}} !== undefined) {
-        queryParams.append('{{getOriginalParamName @key}}', String({{toValidIdentifier @key}}));
-      }
-      {{/if}}
-      {{/each}}
-      
-      if (queryParams.toString()) {
-        url += '?' + queryParams.toString();
-      }
-      
-      // Build request body with nested object reconstruction
-      const bodyParams: Record<string, any> = {};
-      {{#each inputSchema.properties}}
-      {{#if this.isBodyParam}}
-      {{#if this.isFlattened}}
-      // Flattened parameter: {{@key}} -> {{this.originalPath}}
-      if ({{toValidIdentifier @key}} !== undefined) {
-        setNestedProperty(bodyParams, '{{this.originalPath}}', {{toValidIdentifier @key}});
-      }
-      {{else}}
-      if ({{toValidIdentifier @key}} !== undefined) {
-        bodyParams['{{getOriginalParamName @key}}'] = {{toValidIdentifier @key}};
-      }
-      {{/if}}
-      {{/if}}
-      {{/each}}
-      
-      {{#if (eq method "GET")}}
-      const response = await axios.get(url, { headers });
-      {{else if (eq method "POST")}}
-      const response = await axios.post(url, bodyParams, { headers });
-      {{else if (eq method "PUT")}}
-      const response = await axios.put(url, bodyParams, { headers });
-      {{else if (eq method "DELETE")}}
-      const response = await axios.delete(url, { headers });
-      {{else}}
-      const response = await axios.request({
-        method: '{{method}}',
-        url,
-        data: bodyParams,
-        headers
-      });
-      {{/if}}
-      
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(response.data, null, 2)
-          }
-        ]
-      };
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `Error: ${errorMessage}`
-          }
-        ]
-      };
-    }
-  }
-);
-
-{{/each}}
-
-// Register tools and start server
+// Start server
 const transport = new StdioServerTransport();
 await server.connect(transport);
 console.error('{{serverName}} MCP server running on stdio');

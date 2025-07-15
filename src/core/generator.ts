@@ -657,6 +657,24 @@ export const generateServerCode = async (
     const serverCode = TemplateRenderer.render('server', context);
     await FileUtils.writeFile(`${outputPath}/src/index.ts`, serverCode);
     
+    // Generate individual tool files
+    for (const tool of tools) {
+      const toolCode = TemplateRenderer.render('tool', tool as unknown as Record<string, unknown>);
+      await FileUtils.writeFile(`${outputPath}/src/tools/${tool.name}.ts`, toolCode);
+    }
+    
+    // Generate tools index file
+    const toolsIndexCode = TemplateRenderer.render('toolsIndex', context);
+    await FileUtils.writeFile(`${outputPath}/src/tools/index.ts`, toolsIndexCode);
+    
+    // Generate types file
+    const typesCode = TemplateRenderer.render('types', context);
+    await FileUtils.writeFile(`${outputPath}/src/types/index.ts`, typesCode);
+    
+    // Generate utils file
+    const utilsCode = TemplateRenderer.render('utils', context);
+    await FileUtils.writeFile(`${outputPath}/src/utils/index.ts`, utilsCode);
+    
     // Generate package.json
     const packageJson = TemplateRenderer.render('packageJson', context);
     await FileUtils.writeFile(`${outputPath}/package.json`, packageJson);

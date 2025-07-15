@@ -196,7 +196,7 @@ export const registerTemplate = (name: string, templateString: string): void => 
 /**
  * Render template with context
  */
-export const render = (templateName: string, context: TemplateContext): string => {
+export const render = (templateName: string, context: TemplateContext | Record<string, unknown>): string => {
   const template = templates.get(templateName);
   if (!template) {
     throw new Error(`Template '${templateName}' not found`);

@@ -1,0 +1,25 @@
+/**
+ * Tool registration for {{serverName}}
+ * Generated tool registration system
+ */
+
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+
+// Tool imports
+{{#each tools}}
+import { {{name}}Schema, {{name}}Handler } from './{{name}}.js';
+{{/each}}
+
+export function registerTools(server: McpServer, getTokenManager: () => { getValidToken: () => Promise<string> }, baseUrl: string) {
+  {{#each tools}}
+  server.tool(
+    '{{name}}',
+    '{{safeString description}}',
+    {{name}}Schema,
+    async (params: any, context: any) => {
+      return await {{name}}Handler(params, context, getTokenManager(), baseUrl);
+    }
+  );
+
+  {{/each}}
+}

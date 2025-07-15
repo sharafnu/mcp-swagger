@@ -1,0 +1,44 @@
+/**
+ * Types for {{serverName}}
+ * Generated type definitions
+ */
+
+export interface ToolContext {
+  [key: string]: unknown;
+}
+
+export interface ToolParams {
+  [key: string]: unknown;
+}
+
+export interface AuthConfig {
+  clientId: string;
+  clientSecret: string;
+  baseUrl: string;
+  authEndpoint: string;
+}
+
+export interface TokenCache {
+  token: string | null;
+  expiry: Date | null;
+  lastRefresh: Date | null;
+  refreshCount: number;
+  failureCount: number;
+}
+
+export interface ApiError extends Error {
+  response?: {
+    data?: {
+      message?: string;
+    };
+  };
+}
+
+export interface AxiosConfig {
+  method: string;
+  url: string;
+  headers: Record<string, string>;
+  timeout: number;
+  data?: Record<string, unknown>;
+  params?: Record<string, unknown>;
+}
