@@ -1,0 +1,39 @@
+{
+  "name": "{{#if serverName}}{{serverName}}{{else}}generated-mcp-server{{/if}}",
+  "version": "{{serverVersion}}",
+  "description": "{{description}}",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "lint": "eslint src/",
+    "clean": "rm -rf dist/"
+  },
+  "dependencies": {
+{{#each dependencies}}
+    "{{@key}}": "{{this}}"{{#unless @last}},{{/unless}}
+{{/each}}
+  },
+  "devDependencies": {
+    "@types/node": "^20.9.0",
+    "typescript": "^5.2.2",
+    "eslint": "^8.54.0",
+    "@typescript-eslint/eslint-plugin": "^6.12.0",
+    "@typescript-eslint/parser": "^6.12.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "openapi",
+    "swagger",
+    "api",
+    "tools"
+  ],
+  "author": "MCP Swagger Generator",
+  "license": "MIT"
+}
