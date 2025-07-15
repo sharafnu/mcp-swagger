@@ -1,0 +1,12 @@
+{
+  "specifications": [
+    {
+      "input": "https://jsonplaceholder.typicode.com/openapi.json",
+      "baseUrl": "https://jsonplaceholder.typicode.com"
+    },
+    {
+      "input": "https://petstore.swagger.io/v2/swagger.json",
+      "baseUrl": "https://petstore.swagger.io/v2"
+    }
+  ]
+}
