@@ -161,6 +161,15 @@ export const registerHelpers = (): void => {
     if (!Array.isArray(array)) return false;
     return array.includes(value);
   });
+
+  // Helper to check if a parameter is a signature parameter (should be auto-generated)
+  Handlebars.registerHelper('isSignatureParam', function(paramName: string) {
+    if (typeof paramName !== 'string') return false;
+    const lowerName = paramName.toLowerCase();
+    return lowerName.includes('signature') ||
+           lowerName.includes('x-payload-signature') ||
+           lowerName === 'x_payload_signature';
+  });
 };
 
 /**

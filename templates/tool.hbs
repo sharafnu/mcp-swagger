@@ -6,25 +6,29 @@
 import { z } from 'zod';
 import axios from 'axios';
 import { ToolContext } from '../types/index.js';
-import { buildAuthenticatedHeaders, setNestedProperty } from '../utils/index.js';
+import { buildAuthenticatedHeadersWithSignature, setNestedProperty } from '../utils/index.js';
 
 export const {{name}}Schema = {
   {{#each inputSchema.properties}}
+  {{#unless (isSignatureParam @key)}}
   {{toValidIdentifier @key}}: {{#if this.type}}{{#if (eq this.type "string")}}{{#if this.enum}}z.enum([{{#each this.enum}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}]){{else}}z.string(){{#if this.minLength}}.min({{this.minLength}}){{/if}}{{#if this.maxLength}}.max({{this.maxLength}}){{/if}}{{#if this.pattern}}.regex(/{{this.pattern}}/){{/if}}{{/if}}{{else if (eq this.type "number")}}z.number(){{#if this.minimum}}.min({{this.minimum}}){{/if}}{{#if this.maximum}}.max({{this.maximum}}){{/if}}{{#if this.format}}.int(){{/if}}{{else if (eq this.type "integer")}}z.number().int(){{#if this.minimum}}.min({{this.minimum}}){{/if}}{{#if this.maximum}}.max({{this.maximum}}){{/if}}{{else if (eq this.type "boolean")}}z.boolean(){{else if (eq this.type "object")}}z.object({}).passthrough(){{else if (eq this.type "array")}}z.array(z.any()){{else}}z.any(){{/if}}{{else}}z.any(){{/if}}{{#unless (includes ../inputSchema.required @key)}}.optional(){{/unless}}.describe('{{safeString this.description}}'),
+  {{/unless}}
   {{/each}}
 };
 
 export interface {{pascalCase name}}Params {
   {{#each inputSchema.properties}}
+  {{#unless (isSignatureParam @key)}}
   {{toValidIdentifier @key}}{{#unless (includes ../inputSchema.required @key)}}?{{/unless}}: {{#if this.type}}{{#if (eq this.type "string")}}string{{else if (eq this.type "number")}}number{{else if (eq this.type "integer")}}number{{else if (eq this.type "boolean")}}boolean{{else if (eq this.type "object")}}any{{else if (eq this.type "array")}}any[]{{else}}any{{/if}}{{else}}any{{/if}};
+  {{/unless}}
   {{/each}}
 }
 
 export const {{name}}Handler = async (params: {{pascalCase name}}Params, context: ToolContext, tokenManager: any, baseUrl: string) => {
   try {
-    const { {{#each inputSchema.properties}}{{toValidIdentifier @key}}{{#unless @last}}, {{/unless}}{{/each}} } = params;
-    const requestParams = { {{#each inputSchema.properties}}"{{getOriginalParamName @key}}": {{toValidIdentifier @key}}{{#unless @last}}, {{/unless}}{{/each}} };
-    const headers = await buildAuthenticatedHeaders(requestParams, tokenManager);
+    const { {{#each inputSchema.properties}}{{#unless (isSignatureParam @key)}}{{toValidIdentifier @key}}{{#unless @last}}, {{/unless}}{{/unless}}{{/each}} } = params;
+    const requestParams = { {{#each inputSchema.properties}}{{#unless (isSignatureParam @key)}}"{{getOriginalParamName @key}}": {{toValidIdentifier @key}}{{#unless @last}}, {{/unless}}{{/unless}}{{/each}} };
+    // Headers will be built later with signature support
     
     // Build URL with path parameters
     let url = `${baseUrl}{{path}}`;
@@ -70,6 +74,14 @@ export const {{name}}Handler = async (params: {{pascalCase name}}Params, context
     {{/if}}
     {{/if}}
     {{/each}}
+    
+    // Build headers with signature support for POST requests
+    const headers = await buildAuthenticatedHeadersWithSignature(
+      requestParams,
+      tokenManager,
+      {{#if (eq method "POST")}}bodyParams{{else}}undefined{{/if}},
+      '{{method}}'
+    );
     
     {{#if (eq method "GET")}}
     const response = await axios.get(url, { headers });

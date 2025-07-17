@@ -4,7 +4,9 @@
  */
 
 import axios from 'axios';
-import { setTimeout, clearTimeout } from 'timers';
+import { setTimeout, clearTimeout } from 'node:timers';
+import { createHmac } from 'node:crypto';
+import process from 'node:process';
 import { AuthConfig, TokenCache, ToolParams } from '../types/index';
 
 // Enhanced functional token cache with buffer and metrics
@@ -291,6 +293,80 @@ export const buildAuthenticatedHeaders = async (params: ToolParams, tokenManager
           validatedHeaders[validated.name] = validated.value;
         }
       });
+      
+      return { ...baseHeaders, ...validatedHeaders };
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      if (attempt < maxRetries) {
+        // Short delay before retry
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+  }
+  
+  throw new Error(`Failed to build authenticated headers after ${maxRetries} attempts: ${(lastError as Error).message}`);
+};
+
+// Minify JSON while preserving field order from API specification
+export const minifyJsonWithFieldOrder = (payload: Record<string, unknown>): string => {
+  return JSON.stringify(payload, (key, value) => {
+    // Preserve exact field order and remove all whitespace
+    return value;
+  });
+};
+
+// Generate HMAC-SHA256 payload signature
+export const generatePayloadSignature = (payload: Record<string, unknown>, sharedSecret: string): string => {
+  const minifiedPayload = minifyJsonWithFieldOrder(payload);
+  const signature = createHmac('sha256', sharedSecret)
+    .update(minifiedPayload)
+    .digest('base64');
+  return signature;
+};
+
+// Build authenticated headers with payload signature for POST requests
+export const buildAuthenticatedHeadersWithSignature = async (
+  params: ToolParams,
+  tokenManager: { getValidToken: () => Promise<string> },
+  bodyParams?: Record<string, unknown>,
+  httpMethod?: string
+): Promise<Record<string, string>> => {
+  const maxRetries = 2;
+  let lastError: Error | null = null;
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const token = await tokenManager.getValidToken();
+      const baseHeaders = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      };
+      
+      // Extract and validate all header parameters dynamically
+      const rawHeaderParams = extractHeaderParams(params);
+      const validatedHeaders: Record<string, string> = {};
+      
+      // Validate and sanitize each header before adding
+      Object.entries(rawHeaderParams).forEach(([name, value]) => {
+        const validated = validateAndSanitizeHeader(name, value);
+        if (validated) {
+          validatedHeaders[validated.name] = validated.value;
+        }
+      });
+      
+      // Add payload signature for POST requests when SHARED_SECRET is available
+      if (httpMethod === 'POST' && bodyParams && Object.keys(bodyParams).length > 0) {
+        const sharedSecret = process.env['SHARED_SECRET'];
+        if (sharedSecret) {
+          try {
+            const signature = generatePayloadSignature(bodyParams, sharedSecret);
+            validatedHeaders['X-Payload-Signature'] = signature;
+          } catch (error) {
+            console.warn('Failed to generate payload signature:', error);
+            // Continue without signature - graceful fallback
+          }
+        }
+      }
       
       return { ...baseHeaders, ...validatedHeaders };
     } catch (error) {

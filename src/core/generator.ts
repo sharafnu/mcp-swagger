@@ -208,14 +208,20 @@ const generateInputSchema = (endpoint: ApiEndpoint, spec: ParsedApiSpec): McpToo
     }
   }
   
-  // Add header parameters
+  // Add header parameters (excluding signature headers which are auto-generated)
   for (const param of endpoint.parameters) {
     if (param.in === 'header') {
-      const propSchema = convertSchemaToZod(param.schema, param.name, param.description);
-      propSchema.isHeaderParam = true;
-      properties[param.name] = propSchema;
-      if (param.required) {
-        required.push(param.name);
+      // Skip signature headers - they should be auto-generated, not user-provided
+      const isSignatureHeader = param.name.toLowerCase().includes('signature') ||
+                               param.name.toLowerCase().includes('x-payload-signature');
+      
+      if (!isSignatureHeader) {
+        const propSchema = convertSchemaToZod(param.schema, param.name, param.description);
+        propSchema.isHeaderParam = true;
+        properties[param.name] = propSchema;
+        if (param.required) {
+          required.push(param.name);
+        }
       }
     }
   }
@@ -653,8 +659,13 @@ export const generateServerCode = async (
     const templatePath = options.templatePath || 'templates';
     await TemplateRenderer.loadTemplatesFromDir(templatePath);
     
-    // Generate main server file
-    const serverCode = TemplateRenderer.render('server', context);
+    // Generate main server file with proper imports
+    const serverContext = {
+      ...context,
+      mcpSdkPath: '@modelcontextprotocol/sdk/server/index.js',
+      processImport: 'node:process'
+    };
+    const serverCode = TemplateRenderer.render('server', serverContext);
     await FileUtils.writeFile(`${outputPath}/src/index.ts`, serverCode);
     
     // Generate individual tool files
